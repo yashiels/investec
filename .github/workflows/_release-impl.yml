@@ -1,0 +1,188 @@
+name: "Internal: Release Implementation (reusable)"
+on:
+  workflow_call:
+    inputs:
+      bump:
+        description: Version bump type
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      - name: Validate bump input
+        run: |
+          case "${{ inputs.bump }}" in
+            patch|minor|major) ;;
+            *) echo "Invalid bump value: '${{ inputs.bump }}'. Must be patch, minor, or major." >&2; exit 1 ;;
+          esac
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+          cache: true
+
+      - name: Bump version
+        id: version
+        run: |
+          MARKETING_VERSION=$(grep '^MARKETING_VERSION=' version.env | cut -d= -f2)
+          BUILD_NUMBER=$(grep '^BUILD_NUMBER=' version.env | cut -d= -f2)
+          IFS='.' read -r major minor patch <<< "$MARKETING_VERSION"
+
+          case "${{ inputs.bump }}" in
+            major) major=$((major + 1)); minor=0; patch=0 ;;
+            minor) minor=$((minor + 1)); patch=0 ;;
+            patch) patch=$((patch + 1)) ;;
+          esac
+
+          NEW_VERSION="${major}.${minor}.${patch}"
+          NEW_BUILD=$((BUILD_NUMBER + 1))
+
+          echo "MARKETING_VERSION=${NEW_VERSION}" > version.env
+          echo "BUILD_NUMBER=${NEW_BUILD}" >> version.env
+
+          echo "version=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "build=${NEW_BUILD}" >> "$GITHUB_OUTPUT"
+          echo "Bumped to v${NEW_VERSION} (build ${NEW_BUILD})"
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build release binaries
+        id: build
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          LDFLAGS="-s -w -X github.com/yashiels/investec/internal/cli.Version=${VERSION}"
+
+          GOOS=darwin GOARCH=arm64 go build -ldflags "$LDFLAGS" -o investec ./cmd/investec
+          MACOS_TAR="investec-v${VERSION}-darwin-arm64.tar.gz"
+          tar -czf "$MACOS_TAR" investec
+          MACOS_SHA=$(shasum -a 256 "$MACOS_TAR" | awk '{print $1}')
+          rm investec
+
+          GOOS=linux GOARCH=amd64 go build -ldflags "$LDFLAGS" -o investec ./cmd/investec
+          LINUX_TAR="investec-v${VERSION}-linux-x64.tar.gz"
+          tar -czf "$LINUX_TAR" investec
+          LINUX_SHA=$(shasum -a 256 "$LINUX_TAR" | awk '{print $1}')
+          rm investec
+
+          echo "macos_tar=${MACOS_TAR}" >> "$GITHUB_OUTPUT"
+          echo "macos_sha=${MACOS_SHA}" >> "$GITHUB_OUTPUT"
+          echo "linux_tar=${LINUX_TAR}" >> "$GITHUB_OUTPUT"
+          echo "linux_sha=${LINUX_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Commit version bump (verified, via GitHub API)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          BRANCH="${GITHUB_REF_NAME}"
+          HEAD_OID=$(git rev-parse HEAD)
+          # Commits created through the GraphQL API are GPG-signed by GitHub's
+          # web-flow key and land "Verified" — required if the repo enforces the
+          # "Commits must have verified signatures" branch rule.
+          additions=$(jq -n \
+            --arg p1 version.env --arg c1 "$(base64 < version.env | tr -d '\n')" \
+            '[{path:$p1,contents:$c1}]')
+          jq -n \
+            --arg repo "${{ github.repository }}" \
+            --arg branch "$BRANCH" \
+            --arg oid "$HEAD_OID" \
+            --arg headline "chore(release): bump version to ${VERSION}" \
+            --argjson additions "$additions" \
+            '{query: "mutation($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) { commit { oid url } } }",
+              variables: {input: {
+                branch: {repositoryNameWithOwner: $repo, branchName: $branch},
+                expectedHeadOid: $oid,
+                message: {headline: $headline},
+                fileChanges: {additions: $additions}
+              }}}' \
+            | gh api graphql --input -
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          MACOS_SHA="${{ steps.build.outputs.macos_sha }}"
+          NOTES="### Install"$'\n'"brew install yashiels/tap/investec"$'\n\n'"Or download a tarball below."$'\n\n'"**macOS arm64 SHA-256:** ${MACOS_SHA}"
+          gh release create "v${VERSION}" \
+            "${{ steps.build.outputs.macos_tar }}" \
+            "${{ steps.build.outputs.linux_tar }}" \
+            --title "investec v${VERSION}" \
+            --generate-notes \
+            --notes "$NOTES"
+
+      - name: Update Homebrew tap
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          MACOS_SHA="${{ steps.build.outputs.macos_sha }}"
+          LINUX_SHA="${{ steps.build.outputs.linux_sha }}"
+
+          WORK=$(mktemp -d)
+          git clone "https://github.com/yashiels/homebrew-tap.git" "$WORK"
+          cd "$WORK"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          python3 -c "
+          v, sm, sl = '${VERSION}', '${MACOS_SHA}', '${LINUX_SHA}'
+          formula = f'''class Investec < Formula
+            desc \"Read-only CLI for the Investec SA Private Bank API\"
+            homepage \"https://github.com/yashiels/investec\"
+            version \"{v}\"
+            license \"MIT\"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url \"https://github.com/yashiels/investec/releases/download/v{v}/investec-v{v}-darwin-arm64.tar.gz\"
+                sha256 \"{sm}\"
+              end
+            end
+
+            on_linux do
+              if Hardware::CPU.intel?
+                url \"https://github.com/yashiels/investec/releases/download/v{v}/investec-v{v}-linux-x64.tar.gz\"
+                sha256 \"{sl}\"
+              end
+            end
+
+            def install
+              bin.install \"investec\"
+            end
+
+            test do
+              assert_match version.to_s, shell_output(\"#{{bin}}/investec --version\")
+            end
+          end
+          '''
+          import textwrap
+          open('Formula/investec.rb', 'w').write(textwrap.dedent(formula).lstrip())
+          "
+
+          git add Formula/investec.rb
+          git commit -m "chore: bump investec to v${VERSION}"
+          git remote set-url origin "https://x-access-token:${TAP_TOKEN}@github.com/yashiels/homebrew-tap.git"
+          git push origin main
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4
+        with:
+          name: investec-v${{ steps.version.outputs.version }}-binaries
+          path: |
+            ${{ steps.build.outputs.macos_tar }}
+            ${{ steps.build.outputs.linux_tar }}

@@ -1,0 +1,16 @@
+# investec config — place at $XDG_CONFIG_HOME/investec/config.toml
+# (or ~/.config/investec/config.toml). Environment variables override these.
+#
+# Provide the three secrets directly:
+# client_id     = "yAxzQRFX..."
+# client_secret = "4dY0Pj..."
+# api_key       = "eUF4elFS..."
+#
+# ...or fetch them at runtime from a secret manager. credential_command is run
+# as an argv (no shell), with stdin closed under --no-input, and must print
+# KEY=VALUE lines for any of client_id / client_secret / api_key:
+#
+# credential_command = "op-sa read op://Agents/investec-pb/config"
+#
+# Note: project-local config files are intentionally NOT read (an untrusted
+# repository must never be able to run a credential_command).

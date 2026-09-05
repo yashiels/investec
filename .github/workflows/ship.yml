@@ -1,0 +1,26 @@
+name: "Deploy: Ship (release trigger)"
+on:
+  push:
+    branches: [never-trigger]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump type
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+permissions:
+  contents: write
+# A release must never be interrupted mid-flight — serialize overlapping runs (never cancel).
+concurrency:
+  group: ship-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  release:
+    uses: ./.github/workflows/_release-impl.yml
+    with:
+      bump: ${{ inputs.bump }}
+    secrets: inherit
