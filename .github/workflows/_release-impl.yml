@@ -58,7 +58,7 @@ jobs:
       - name: Test
         run: go test ./...
 
-      - name: Build release binaries
+      - name: Build release binaries (amd64 + arm64, macOS + Linux)
         id: build
         env:
           CGO_ENABLED: "0"
@@ -66,22 +66,25 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           LDFLAGS="-s -w -X github.com/yashiels/investec/internal/cli.Version=${VERSION}"
 
-          GOOS=darwin GOARCH=arm64 go build -ldflags "$LDFLAGS" -o investec ./cmd/investec
-          MACOS_TAR="investec-v${VERSION}-darwin-arm64.tar.gz"
-          tar -czf "$MACOS_TAR" investec
-          MACOS_SHA=$(shasum -a 256 "$MACOS_TAR" | awk '{print $1}')
-          rm investec
+          # <GOOS> <GOARCH> <artifact-suffix> — build, tarball, sha, emit outputs.
+          build() {
+            local goos="$1" goarch="$2" suffix="$3"
+            GOOS="$goos" GOARCH="$goarch" go build -ldflags "$LDFLAGS" -o investec ./cmd/investec
+            local tar="investec-v${VERSION}-${suffix}.tar.gz"
+            tar -czf "$tar" investec
+            rm -f investec
+            local sha
+            sha=$(shasum -a 256 "$tar" | awk '{print $1}')
+            local key="${suffix//-/_}"
+            echo "${key}_tar=${tar}" >> "$GITHUB_OUTPUT"
+            echo "${key}_sha=${sha}" >> "$GITHUB_OUTPUT"
+            echo "${suffix}: ${sha}  (${tar})"
+          }
 
-          GOOS=linux GOARCH=amd64 go build -ldflags "$LDFLAGS" -o investec ./cmd/investec
-          LINUX_TAR="investec-v${VERSION}-linux-x64.tar.gz"
-          tar -czf "$LINUX_TAR" investec
-          LINUX_SHA=$(shasum -a 256 "$LINUX_TAR" | awk '{print $1}')
-          rm investec
-
-          echo "macos_tar=${MACOS_TAR}" >> "$GITHUB_OUTPUT"
-          echo "macos_sha=${MACOS_SHA}" >> "$GITHUB_OUTPUT"
-          echo "linux_tar=${LINUX_TAR}" >> "$GITHUB_OUTPUT"
-          echo "linux_sha=${LINUX_SHA}" >> "$GITHUB_OUTPUT"
+          build darwin arm64 darwin-arm64
+          build darwin amd64 darwin-amd64
+          build linux  amd64 linux-amd64
+          build linux  arm64 linux-arm64
 
       - name: Commit version bump (verified, via GitHub API)
         env:
@@ -116,11 +119,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          MACOS_SHA="${{ steps.build.outputs.macos_sha }}"
-          NOTES="### Install"$'\n'"brew install yashiels/tap/investec"$'\n\n'"Or download a tarball below."$'\n\n'"**macOS arm64 SHA-256:** ${MACOS_SHA}"
+          NOTES="### Install"$'\n'"brew install yashiels/tap/investec"$'\n\n'"Or download a tarball below (macOS + Linux, amd64 + arm64)."$'\n\n'"**SHA-256**"$'\n'"- darwin-arm64: ${{ steps.build.outputs.darwin_arm64_sha }}"$'\n'"- darwin-amd64: ${{ steps.build.outputs.darwin_amd64_sha }}"$'\n'"- linux-amd64: ${{ steps.build.outputs.linux_amd64_sha }}"$'\n'"- linux-arm64: ${{ steps.build.outputs.linux_arm64_sha }}"
           gh release create "v${VERSION}" \
-            "${{ steps.build.outputs.macos_tar }}" \
-            "${{ steps.build.outputs.linux_tar }}" \
+            "${{ steps.build.outputs.darwin_arm64_tar }}" \
+            "${{ steps.build.outputs.darwin_amd64_tar }}" \
+            "${{ steps.build.outputs.linux_amd64_tar }}" \
+            "${{ steps.build.outputs.linux_arm64_tar }}" \
             --title "investec v${VERSION}" \
             --generate-notes \
             --notes "$NOTES"
@@ -130,8 +134,10 @@ jobs:
           TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          MACOS_SHA="${{ steps.build.outputs.macos_sha }}"
-          LINUX_SHA="${{ steps.build.outputs.linux_sha }}"
+          export DARWIN_ARM64_SHA="${{ steps.build.outputs.darwin_arm64_sha }}"
+          export DARWIN_AMD64_SHA="${{ steps.build.outputs.darwin_amd64_sha }}"
+          export LINUX_AMD64_SHA="${{ steps.build.outputs.linux_amd64_sha }}"
+          export LINUX_ARM64_SHA="${{ steps.build.outputs.linux_arm64_sha }}"
 
           WORK=$(mktemp -d)
           git clone "https://github.com/yashiels/homebrew-tap.git" "$WORK"
@@ -140,7 +146,11 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           python3 -c "
-          v, sm, sl = '${VERSION}', '${MACOS_SHA}', '${LINUX_SHA}'
+          import os, textwrap
+          v = '${VERSION}'
+          base = 'https://github.com/yashiels/investec/releases/download/v' + v
+          d_arm, d_amd = os.environ['DARWIN_ARM64_SHA'], os.environ['DARWIN_AMD64_SHA']
+          l_amd, l_arm = os.environ['LINUX_AMD64_SHA'], os.environ['LINUX_ARM64_SHA']
           formula = f'''class Investec < Formula
             desc \"Read-only CLI for the Investec SA Private Bank API\"
             homepage \"https://github.com/yashiels/investec\"
@@ -149,15 +159,21 @@ jobs:
 
             on_macos do
               if Hardware::CPU.arm?
-                url \"https://github.com/yashiels/investec/releases/download/v{v}/investec-v{v}-darwin-arm64.tar.gz\"
-                sha256 \"{sm}\"
+                url \"{base}/investec-v{v}-darwin-arm64.tar.gz\"
+                sha256 \"{d_arm}\"
+              else
+                url \"{base}/investec-v{v}-darwin-amd64.tar.gz\"
+                sha256 \"{d_amd}\"
               end
             end
 
             on_linux do
-              if Hardware::CPU.intel?
-                url \"https://github.com/yashiels/investec/releases/download/v{v}/investec-v{v}-linux-x64.tar.gz\"
-                sha256 \"{sl}\"
+              if Hardware::CPU.arm?
+                url \"{base}/investec-v{v}-linux-arm64.tar.gz\"
+                sha256 \"{l_arm}\"
+              else
+                url \"{base}/investec-v{v}-linux-amd64.tar.gz\"
+                sha256 \"{l_amd}\"
               end
             end
 
@@ -170,7 +186,6 @@ jobs:
             end
           end
           '''
-          import textwrap
           open('Formula/investec.rb', 'w').write(textwrap.dedent(formula).lstrip())
           "
 
@@ -184,5 +199,7 @@ jobs:
         with:
           name: investec-v${{ steps.version.outputs.version }}-binaries
           path: |
-            ${{ steps.build.outputs.macos_tar }}
-            ${{ steps.build.outputs.linux_tar }}
+            ${{ steps.build.outputs.darwin_arm64_tar }}
+            ${{ steps.build.outputs.darwin_amd64_tar }}
+            ${{ steps.build.outputs.linux_amd64_tar }}
+            ${{ steps.build.outputs.linux_arm64_tar }}
