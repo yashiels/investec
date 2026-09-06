@@ -15,9 +15,11 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 30
     steps:
+      # Default GITHUB_TOKEN checks out this repo; the version bump + release use
+      # GITHUB_TOKEN too (main is unprotected), and the Homebrew tap step clones
+      # the tap separately with its own HOMEBREW_TAP_TOKEN. The PAT is NOT scoped
+      # to this repo, so using it here made checkout fail ("could not read Username").
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
-        with:
-          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
 
       - name: Validate bump input
         run: |
