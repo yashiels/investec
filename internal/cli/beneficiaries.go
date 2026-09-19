@@ -22,12 +22,14 @@ func beneficiariesCmd(a *app) *cobra.Command {
 		}, nil),
 	})
 	cmd.AddCommand(&cobra.Command{
-		Use:   "categories",
+		Use:   "categories <profileId>",
 		Short: "List beneficiary categories",
-		Args:  cobra.NoArgs,
-		RunE: a.run(func(ctx context.Context, c *api.Client) (*api.Raw, error) {
-			return c.BeneficiaryCategories(ctx)
-		}, nil),
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cc *cobra.Command, args []string) error {
+			return a.run(func(ctx context.Context, c *api.Client) (*api.Raw, error) {
+				return c.BeneficiaryCategories(ctx, args[0])
+			}, nil)(cc, args)
+		},
 	})
 	return cmd
 }

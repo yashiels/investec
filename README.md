@@ -53,7 +53,7 @@ investec documents get <accountId> Statement 2026-08-31 -o statement.pdf
 | `investec accounts transactions <accountId>` | Posted transactions (`--from --to --transaction-type --include-pending`) |
 | `investec accounts pending <accountId>` | Pending transactions |
 | `investec beneficiaries list` | List beneficiaries |
-| `investec beneficiaries categories` | List beneficiary categories |
+| `investec beneficiaries categories <profileId>` | List beneficiary categories for a profile |
 | `investec profiles list` | List profiles |
 | `investec profiles accounts <profileId>` | Accounts for a profile |
 | `investec profiles beneficiaries <profileId> <accountId>` | Beneficiaries for a profile account |

@@ -90,8 +90,11 @@ func (c *Client) Beneficiaries(ctx context.Context) (*Raw, error) {
 	return c.get(ctx, "/za/pb/v1/accounts/beneficiaries", nil)
 }
 
-func (c *Client) BeneficiaryCategories(ctx context.Context) (*Raw, error) {
-	return c.get(ctx, "/za/pb/v1/accounts/beneficiarycategories", nil)
+func (c *Client) BeneficiaryCategories(ctx context.Context, profileID string) (*Raw, error) {
+	if err := requireID("profileId", profileID); err != nil {
+		return nil, err
+	}
+	return c.get(ctx, "/za/pb/v1/accounts/beneficiarycategories", url.Values{"profileId": {profileID}})
 }
 
 func (c *Client) Profiles(ctx context.Context) (*Raw, error) {
